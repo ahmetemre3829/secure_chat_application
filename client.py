@@ -1,4 +1,4 @@
-#ahmetemre3829
+#ahmetemre3829 - ver._1.2
 import sys
 import socket
 import threading
@@ -8,15 +8,34 @@ from PyQt5.QtGui import *
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
+
+def send_data(sock, data):
+    length = len(data)
+    sock.sendall(length.to_bytes(4, byteorder='big') + data)
+
+def recvall(sock, n):
+    data = b''
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None
+        data += packet
+    return data
+
+def recv_data(sock):
+    raw_len = recvall(sock, 4)
+    if not raw_len:
+        return None
+    msg_len = int.from_bytes(raw_len, byteorder='big')
+    return recvall(sock, msg_len)
 
 class ConnectWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
-        
+
     def initUI(self):
-        self.setWindowTitle('Chat - Connect')
+        self.setWindowTitle('Secure Chat App                ahmetemre3829')
         self.setFixedSize(500, 300)
         
         layout = QVBoxLayout()
@@ -59,9 +78,9 @@ class ConnectWindow(QWidget):
         layout.addLayout(form)
         layout.addWidget(self.btn_connect)
         
-
         self.setLayout(layout)
         self.apply_styles()
+
     def apply_styles(self):
         self.setStyleSheet("""
             QWidget {
@@ -84,7 +103,7 @@ class ConnectWindow(QWidget):
                 border-radius: 4px;
                 padding: 5px;
             }
-        """)
+        """) 
         
     def connect_server(self):
         try:
@@ -94,7 +113,6 @@ class ConnectWindow(QWidget):
                 int(self.inputs['port'].text())
             ))
             
-            #rsa public
             server_public_key = RSA.import_key(self.client.recv(1024))
             cipher_rsa = PKCS1_OAEP.new(server_public_key)
             
@@ -105,9 +123,9 @@ class ConnectWindow(QWidget):
             if response == "WRONG_PASS":
                 raise ConnectionError("Wrong password")
             
-            aes_key = get_random_bytes(16)
-            iv = get_random_bytes(16)
-            encrypted_aes = cipher_rsa.encrypt(aes_key + iv)
+            aes_key = get_random_bytes(32)
+            handshake_nonce = get_random_bytes(12)
+            encrypted_aes = cipher_rsa.encrypt(aes_key + handshake_nonce)
             self.client.send(encrypted_aes)
             
             self.client.send(self.inputs['nick'].text().encode())
@@ -115,8 +133,7 @@ class ConnectWindow(QWidget):
             self.chat_window = ChatWindow(
                 self.client,
                 self.inputs['nick'].text(),
-                aes_key,
-                iv
+                aes_key
             )
             self.close()
             self.chat_window.show()
@@ -126,30 +143,30 @@ class ConnectWindow(QWidget):
                 f"Could not connect to the server:\n{str(e)}")
 
 class ChatWindow(QMainWindow):
-    def __init__(self, client, nickname, aes_key, iv):
+    def __init__(self, client, nickname, aes_key):
         super().__init__()
         self.client = client
         self.nickname = nickname
         self.aes_key = aes_key
-        self.iv = iv
+        self.active_users = []
         self.initUI()
         self.receive_thread = threading.Thread(target=self.receive_messages)
         self.receive_thread.daemon = True
         self.receive_thread.start()
         
-    def create_cipher(self, iv):
-        return AES.new(self.aes_key, AES.MODE_CBC, iv=iv)
-        
     def initUI(self):
         self.setWindowTitle(f'Chat Room - {self.nickname}')
-        self.setFixedSize(600, 500)
+        self.setFixedSize(800, 500)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+        
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(15)
         
         self.message_area = QTextBrowser()
         self.message_area.setStyleSheet("""
@@ -182,8 +199,41 @@ class ChatWindow(QMainWindow):
         input_layout.addWidget(self.input_field)
         input_layout.addWidget(self.btn_send)
         
-        layout.addWidget(self.message_area)
-        layout.addLayout(input_layout)
+        left_panel.addWidget(self.message_area)
+        left_panel.addLayout(input_layout)
+        
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(10)
+        right_panel.setContentsMargins(10, 10, 10, 10)
+        
+        users_label = QLabel("Online Users")
+        users_label.setAlignment(Qt.AlignCenter)
+        users_label.setFont(QFont("Arial", 14, QFont.Bold))
+        users_label.setStyleSheet("color: #81A1C1;")
+        
+        self.users_list = QListWidget()
+        self.users_list.setStyleSheet("""
+            QListWidget {
+                background: #3B4252;
+                border: 1px solid #4C566A;
+                border-radius: 5px;
+                color: #D8DEE9;
+                font-size: 14px;
+            }
+            QListWidget::item {
+                padding: 8px;
+            }
+            QListWidget::item:hover {
+                background: #434C5E;
+            }
+        """)
+        self.users_list.setFixedWidth(200)
+        
+        right_panel.addWidget(users_label)
+        right_panel.addWidget(self.users_list)
+        
+        main_layout.addLayout(left_panel, 75)
+        main_layout.addLayout(right_panel, 25)
         self.apply_styles()
         
     def apply_styles(self):
@@ -201,23 +251,35 @@ class ChatWindow(QMainWindow):
             QPushButton:hover {
                 background: #81A1C1;
             }
-        """)
-        
+        """)    
+    def update_users_list(self, users):
+        self.users_list.clear()
+        for user in users:
+            item = QListWidgetItem(user)
+            item.setForeground(QColor("#88C0D0"))
+            self.users_list.addItem(item)
+            
     def append_message(self, message):
-        try:
-            decoded = message.decode()
-        except:
-            decoded = message
+        if isinstance(message, bytes):
+            try:
+                message = message.decode("utf-8", errors="ignore")
+            except Exception:
+                message = str(message)
+        
+        if message.startswith("ACTIVE_USERS:"):
+            users = message.split(":", 1)[1].split(",")
+            self.update_users_list(users)
+            return
 
-        if "joined the room" in decoded:
-            formatted = f'<span style="color: yellow;">{decoded}</span>'
-        elif "left the room" in decoded:
-            formatted = f'<span style="color: yellow;">{decoded}</span>'
-        elif ':' in decoded:
-            sender, msg = decoded.split(":", 1)
+        if "joined the room" in message:
+            formatted = f'<span style="color: yellow;">{message}</span>'
+        elif "left the room" in message:
+            formatted = f'<span style="color: yellow;">{message}</span>'
+        elif ':' in message:
+            sender, msg = message.split(":", 1)
             formatted = f'<span style="color: green;">{sender}:</span><span style="color: white;">{msg}</span>'
         else:
-            formatted = f'<span style="color: white;">{decoded}</span>'
+            formatted = f'<span style="color: white;">{message}</span>'
 
         self.message_area.append(formatted)
         self.message_area.verticalScrollBar().setValue(self.message_area.verticalScrollBar().maximum())
@@ -226,34 +288,45 @@ class ChatWindow(QMainWindow):
         message = self.input_field.text().strip()
         if message:
             try:
-                new_iv = get_random_bytes(16)
-                cipher = self.create_cipher(new_iv)
-                padded = pad(f"{self.nickname}: {message}".encode(), AES.block_size)
-                encrypted = cipher.encrypt(padded)
+                nonce = get_random_bytes(12)
+                cipher = AES.new(self.aes_key, AES.MODE_GCM, nonce=nonce)
+                plaintext = f"{self.nickname}: {message}"
+                ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode())
                 
-                self.client.send(new_iv + encrypted)
+                send_data(self.client, nonce + tag + ciphertext)
+                
                 self.input_field.clear()
-                self.append_message(f"{self.nickname}: {message}".encode())
+                self.append_message(plaintext)
             except Exception as e:
                 print(f"Sending error: {str(e)}")
                 
     def receive_messages(self):
         while True:
             try:
-                data = self.client.recv(1024)
+                data = recv_data(self.client)
                 if data:
-                    received_iv = data[:16]
-                    encrypted_message = data[16:]
-                    cipher = self.create_cipher(received_iv)
-                    decrypted = unpad(cipher.decrypt(encrypted_message), AES.block_size)
-                    self.append_message(decrypted)
+                    try:
+                        if len(data) < 28:
+                            print(f"Geçersiz mesaj alındı: {data}")
+                            continue
+                        
+                        nonce = data[:12]
+                        tag = data[12:28]
+                        ciphertext = data[28:]
+                
+                        cipher = AES.new(self.aes_key, AES.MODE_GCM, nonce=nonce)
+                        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                
+                        decoded_message = plaintext.decode("utf-8", errors="ignore")
+                        self.append_message(decoded_message)
+                    except Exception as e:
+                        print(f"Receive error: {str(e)} - Raw data: {data}")
                 else:
                     break
             except Exception as e:
-                print(f"Receive error: {str(e)}")
+                self.append_message(f'<span style="color: red;">Receive error: {str(e)}</span>')
                 self.client.close()
                 break
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

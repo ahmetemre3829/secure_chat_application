@@ -35,7 +35,7 @@ class ConnectWindow(QWidget):
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle('Secure Chat App                ahmetemre3829')
+        self.setWindowTitle('Secure Chat App             #ahmetemre3829')
         self.setFixedSize(500, 300)
         
         layout = QVBoxLayout()

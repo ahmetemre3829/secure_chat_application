@@ -1,4 +1,4 @@
-#ahmetemre3829 - ver._1.2
+#ahmetemre3829 - ver._1.3
 import socket
 import threading
 from Crypto.Cipher import AES, PKCS1_OAEP
@@ -6,9 +6,15 @@ from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 import colorama 
 from colorama import Fore
+import yaml
+import sys
+import os
+from pyngrok import ngrok, conf
+from pathlib import Path
+import getpass
 colorama.init(autoreset=True)
 
-print(Fore.CYAN + "Welcome to the server setup program. To start a server, please enter the requested informations below. #ahmetemre3829\n")
+print(Fore.CYAN + "Welcome to the server setup program. To start a server, please enter the requested informations below. #ahmetemre3829 - ver_1.3\n")
 
 def send_data(sock, data):
     length = len(data)
@@ -31,10 +37,11 @@ def recv_data(sock):
     return recvall(sock, msg_len)
 
 class SecureChatServer:
-    def __init__(self, host, port, password):
+    def __init__(self, host, port, password, public_url=None):
         self.host = host
         self.port = port
         self.password = password
+        self.public_url = public_url
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind((self.host, self.port))
         self.server.listen()
@@ -67,7 +74,6 @@ class SecureChatServer:
                 rec_aes_key = self.aes_keys[client]
                 cipher = AES.new(rec_aes_key, AES.MODE_GCM, nonce=new_nonce)
                 ciphertext, tag = cipher.encrypt_and_digest(message)
-                # Gönderim: nonce (12) + tag (16) + ciphertext
                 send_data(client, new_nonce + tag + ciphertext)
 
             except Exception as e:
@@ -82,7 +88,7 @@ class SecureChatServer:
                 if not data:
                     break
                 if len(data) < 28:
-                    print(Fore.RED + f"Geçersiz mesaj alındı: {data}")
+                    print(Fore.RED + f": {data}")
                     continue
                 recv_nonce = data[:12]
                 tag = data[12:28]
@@ -114,6 +120,9 @@ class SecureChatServer:
         print("\n")
         print(Fore.YELLOW + "✓ Server has started")
         print(Fore.GREEN + "• Listening on: " + Fore.CYAN + f"{self.host}:{self.port}")
+        if self.public_url:
+            print(Fore.GREEN + "• Ngrok: " + Fore.CYAN + f"{str(self.public_url).split('"')[1].replace('tcp://', '')}")
+
         print(Fore.GREEN + "• Password: " + Fore.CYAN + self.password)
         print("")
         while True:
@@ -158,9 +167,97 @@ class SecureChatServer:
                 print(Fore.RED + f"Connection error: {str(e)}")
                 client.close()
 
+
+def get_token_file_path():
+    user = getpass.getuser()
+    folder = Path(f"C:/Users/{user}/AppData/Local/ngrok")
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / "ngrok.yml"
+
+def read_token():
+    path = get_token_file_path()
+    if path.exists():
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+            if data:
+                if "agent" in data and "authtoken" in data["agent"]:
+                    return data["agent"]["authtoken"]
+                elif "authtoken" in data:
+                    return data["authtoken"]
+    return None
+
+def save_token(token):
+    path = get_token_file_path()
+    content = f"""region: us
+version: '2'
+authtoken: {token}
+"""
+    with open(path, "w") as f:
+        f.write(content)
+
+def get_or_ask_token():
+    EXPECTED_TOKEN_LENGTH = 49
+    token = read_token()
+    if token and len(token) == EXPECTED_TOKEN_LENGTH:
+        print(Fore.YELLOW + "Opening tunnel...")
+        return token
+    else:
+        token = input(Fore.MAGENTA + "Enter ngrok authtoken: " + Fore.WHITE).strip()
+        if len(token) == EXPECTED_TOKEN_LENGTH:
+            save_token(token)
+            print(Fore.GREEN + "Authtoken saved")
+            return token
+        else:
+            print(Fore.RED + f"Invalid token length. Expected {EXPECTED_TOKEN_LENGTH} characters.")
+            return None
+
+
+def start_ngrok():
+    while True:
+        token = get_or_ask_token()
+        if not token:
+            print(Fore.RED + "Authtoken error.")
+            continue
+
+        stdout_fileno = sys.stdout
+        stderr_fileno = sys.stderr
+        devnull = open(os.devnull, 'w')
+        sys.stdout = devnull
+        sys.stderr = devnull
+
+        try:
+            public_url = ngrok.connect(f"{host}:{port}", "tcp")
+        except Exception as e:
+            sys.stdout = stdout_fileno
+            sys.stderr = stderr_fileno
+
+            error_msg = str(e).lower()
+            if "The authtoken you specified is properly formed, but it is invalid." in error_msg:
+                print(Fore.RED + "Ngrok error: " + Fore.WHITE + "Invalid authtoken.")
+                path = get_token_file_path()
+                if path.exists():
+                    path.unlink()
+                print(Fore.YELLOW + "Please enter a valid authtoken.")
+                continue
+            else:
+                print(Fore.RED + f"Ngrok eror: "+ Fore.WHITE  +f"{e}")
+                return None
+
+        sys.stdout = stdout_fileno
+        sys.stderr = stderr_fileno
+
+        print(Fore.GREEN + f"Ngrok tunnel opened: "+Fore.WHITE+f"{str(public_url).replace('NgrokTunnel: ', '')}")
+        return public_url
+
+
 if __name__ == "__main__":
+    ng = input(Fore.YELLOW + "Do you want to use ngrok? (y/n): " + Fore.WHITE)
     host = input(Fore.MAGENTA + "Server IP: " + Fore.WHITE)
     port = int(input(Fore.MAGENTA + "Server Port: "  + Fore.WHITE))
     password = input(Fore.MAGENTA + "Server Password: " + Fore.WHITE)
-    server = SecureChatServer(host, port, password)
+    if ng.strip().lower() == 'y':
+        public_url=start_ngrok()
+    else:
+        public_url = None
+    server = SecureChatServer(host, port, password, public_url)
     server.start()
